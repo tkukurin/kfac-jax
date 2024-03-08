@@ -43,23 +43,22 @@ $ pip install -r requirements_examples.txt
 ## Quickstart<a id="quickstart"></a>
 
 Let's take a look at a simple example of training a neural network, defined
-using [Haiku], with the K-FAC optimizer:
+using [Flax], with the K-FAC optimizer:
 
 ```python
-import haiku as hk
 import jax
 import jax.numpy as jnp
 import kfac_jax
 
+from flax import linen as nn
+
 # Hyper parameters
-NUM_CLASSES = 10
 L2_REG = 1e-3
-NUM_BATCHES = 100
 
 
-def make_dataset_iterator(batch_size):
+def make_dataset_iterator(batch_size: int, num_batches: int):
   # Dummy dataset, in practice this should be your dataset pipeline
-  for _ in range(NUM_BATCHES):
+  for _ in range(num_batches):
     yield jnp.zeros([batch_size, 100]), jnp.ones([batch_size], dtype="int32")
 
 
@@ -72,30 +71,33 @@ def softmax_cross_entropy(logits: jnp.ndarray, targets: jnp.ndarray):
   # See https://kfac-jax.readthedocs.io/en/latest/overview.html#supported-losses
   kfac_jax.register_softmax_cross_entropy_loss(logits, targets)
   log_p = jax.nn.log_softmax(logits, axis=-1)
-  return - jax.vmap(lambda x, y: x[y])(log_p, targets)
+  return -jax.vmap(lambda x, y: x[y])(log_p, targets)
 
 
-def model_fn(x):
-  """A Haiku MLP model function - three hidden layer network with tanh."""
-  return hk.nets.MLP(
-    output_sizes=(50, 50, 50, NUM_CLASSES),
-    with_bias=True,
-    activation=jax.nn.tanh,
-  )(x)
+class MLP(nn.Module):
+  """Three hidden layer network with tanh."""
+  num_classes: int
+
+  @nn.compact
+  def __call__(self, x):
+    x = nn.tanh(nn.Dense(50)(x))
+    x = nn.tanh(nn.Dense(50)(x))
+    x = nn.tanh(nn.Dense(50)(x))
+    x = nn.Dense(self.num_classes)(x)
+    return x
 
 
-# The Haiku transformed model
-hk_model = hk.without_apply_rng(hk.transform(model_fn))
+model = MLP(num_classes=10)
 
 
 def loss_fn(model_params, model_batch):
   """The loss function to optimize."""
   x, y = model_batch
-  logits = hk_model.apply(model_params, x)
+  logits = model.apply(model_params, x)
   loss = jnp.mean(softmax_cross_entropy(logits, y))
 
-  # The optimizer assumes that the function you provide has already added
-  # the L2 regularizer to its gradients.
+  # The kfac_jax optimizer assumes that the function you provide has already
+  # added the L2 regularizer to its gradients. See docs for details.
   return loss + L2_REG * kfac_jax.utils.inner_product(params, params) / 2.0
 
 
@@ -111,13 +113,14 @@ optimizer = kfac_jax.Optimizer(
   use_adaptive_damping=True,
   initial_damping=1.0,
   multi_device=False,
+  debug=True,
 )
 
-input_dataset = make_dataset_iterator(128)
+input_dataset = make_dataset_iterator(128, 100)
 rng = jax.random.PRNGKey(42)
 dummy_images, dummy_labels = next(input_dataset)
 rng, key = jax.random.split(rng)
-params = hk_model.init(key, dummy_images)
+params = model.init(key, dummy_images)
 rng, key = jax.random.split(rng)
 opt_state = optimizer.init(params, key, (dummy_images, dummy_labels))
 
@@ -220,5 +223,5 @@ and the year corresponds to the project's open-source release.
 
 [K-FAC]: https://arxiv.org/abs/1503.05671
 [JAX]: https://github.com/google/jax
-[Haiku]: https://github.com/google-deepmind/dm-haiku
+[Flax]: https://github.com/google/flax
 [documentation]: https://kfac-jax.readthedocs.io/
